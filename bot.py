@@ -1,8 +1,5 @@
 import requests
 import time
-import json
-import os
-import uuid
 from datetime import datetime, timezone, timedelta
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
@@ -11,8 +8,6 @@ CHANNEL_ID = "-1003767281176"
 TELEGRAM_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 FETCH_INTERVAL = 60
 DIGEST_INTERVAL = 2 * 3600
-PLAYING_CACHE_FILE = ".game_playing_cache.json"
-_playing_cache = {}
 
 # ── DATE UTILS ────────────────────────────────────────────────────────────────
 WIB = timezone(timedelta(hours=7))
@@ -58,100 +53,6 @@ def is_today(iso_str):
     dt_wib = dt.astimezone(WIB)
     today_wib = datetime.now(WIB).strftime("%Y-%m-%d")
     return dt_wib.strftime("%Y-%m-%d") == today_wib
-
-# ── GAME TRAFFIC / MOMENTUM ─────────────────────────────────────────────────
-def _load_playing_cache():
-    global _playing_cache
-    if os.path.exists(PLAYING_CACHE_FILE):
-        try:
-            with open(PLAYING_CACHE_FILE, "r") as f:
-                _playing_cache = json.load(f)
-        except Exception:
-            _playing_cache = {}
-    return _playing_cache
-
-def _save_playing_cache():
-    try:
-        with open(PLAYING_CACHE_FILE, "w") as f:
-            json.dump(_playing_cache, f)
-    except Exception as e:
-        print(f"[GameTraffic] Gagal simpan cache: {e}")
-
-def search_universe_id(game_name: str):
-    """Resolve nama game -> universeId pakai Roblox discovery search.
-    CATATAN: endpoint ini nggak resmi didokumentasikan buat pihak ketiga.
-    Kalau format responsnya beda/berubah, cek raw response dan sesuaikan parsing di bawah.
-    """
-    try:
-        session_id = str(uuid.uuid4())
-        res = requests.get(
-            "https://apis.roblox.com/search-api/omni-search",
-            params={"searchQuery": game_name, "pageType": "all", "sessionId": session_id},
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=8,
-        )
-        if res.status_code != 200:
-            return None
-        data = res.json()
-        for block in data.get("searchResults", []):
-            for item in block.get("contents", []):
-                uid = item.get("universeId")
-                if uid:
-                    return uid
-    except Exception as e:
-        print(f"[GameTraffic] Search error for '{game_name}': {e}")
-    return None
-
-def get_playing_count(universe_id: int):
-    try:
-        res = requests.get(
-            "https://games.roblox.com/v1/games",
-            params={"universeIds": universe_id},
-            timeout=8,
-        )
-        data = res.json().get("data", [])
-        if data:
-            return data[0].get("playing", 0)
-    except Exception as e:
-        print(f"[GameTraffic] Fetch playing error for {universe_id}: {e}")
-    return None
-
-def get_game_status(game_name: str) -> str:
-    """Panggil ini dengan nama game -> dapet status string siap tampil di digest."""
-    _load_playing_cache()
-
-    universe_id = search_universe_id(game_name)
-    if universe_id is None:
-        return "❔ UNKNOWN"
-
-    current = get_playing_count(universe_id)
-    if current is None:
-        return "❔ UNKNOWN"
-
-    key = str(universe_id)
-    prev_entry = _playing_cache.get(key)
-    _playing_cache[key] = {"playing": current, "ts": time.time()}
-    _save_playing_cache()
-
-    if prev_entry is None or prev_entry.get("playing", 0) == 0:
-        return f"🆕 NEW ({current:,} main)"
-
-    previous = prev_entry["playing"]
-    change_pct = ((current - previous) / previous) * 100
-
-    if change_pct >= 50:
-        status = "🔥 EXCELLENT"
-    elif change_pct >= 15:
-        status = "✅ GOOD"
-    elif change_pct >= -15:
-        status = "😐 STABLE"
-    elif change_pct >= -50:
-        status = "📉 DECLINING"
-    else:
-        status = "💀 DEAD"
-
-    sign = "+" if change_pct >= 0 else ""
-    return f"{status} ({current:,} main, {sign}{change_pct:.0f}%)"
 
 # ── FETCH ─────────────────────────────────────────────────────────────────────
 def fetch_rscripts(page=1):
@@ -239,8 +140,6 @@ def send_source_digest(items, source_label, date_str, hour_start, hour_end, is_r
         loadstr = item.get("loadstring", "") or ""
         players = item.get("players", -1)
         player_str = f" | 🟢 {players:,} main" if players > 0 else ""
-        game_status = item.get("status", "")
-        status_str = f" | {game_status}" if game_status else ""
 
         if is_rs:
             game = s.get("game", {})
@@ -252,7 +151,7 @@ def send_source_digest(items, source_label, date_str, hour_start, hour_end, is_r
             views = s.get("views", 0)
             link = f"https://rscripts.net/script/{s.get('slug', '')}"
             uploaded = time_ago(s.get("createdAt", ""))
-            lines.append(f"\n<b>{num}. {game_name}</b>{player_str}{status_str}")
+            lines.append(f"\n<b>{num}. {game_name}</b>{player_str}")
             lines.append(f"   📜 {title}")
             lines.append(f"   {keyless} | ❤️ {likes} 👎 {dislikes} | 👁 {views} | ⏱ {uploaded}")
             lines.append(f"   🔗 <a href='{link}'>View Script</a>")
@@ -266,7 +165,7 @@ def send_source_digest(items, source_label, date_str, hour_start, hour_end, is_r
             link = f"https://scriptblox.com/script/{s.get('slug', '')}"
             uploaded = time_ago(s.get("createdAt", ""))
             bumped = time_ago(s.get("lastBump", ""))
-            lines.append(f"\n<b>{num}. {game_name}</b>{verified}{player_str}{status_str}")
+            lines.append(f"\n<b>{num}. {game_name}</b>{verified}{player_str}")
             lines.append(f"   📜 {title}")
             lines.append(f"   {keyless} | 👁 {views} | ⏱ {uploaded} | bump: {bumped}")
             lines.append(f"   🔗 <a href='{link}'>View Script</a>")
@@ -282,23 +181,14 @@ def send_source_digest(items, source_label, date_str, hour_start, hour_end, is_r
 
 def score_item(item, is_rs):
     s = item["script"]
-    status = item.get("status", "")
-    momentum_bonus = 0
-    if "EXCELLENT" in status:
-        momentum_bonus = 2000
-    elif "GOOD" in status:
-        momentum_bonus = 800
-    elif "DECLINING" in status or "DEAD" in status:
-        momentum_bonus = -500
-
     if is_rs:
         likes = s.get("likes", 0)
         views = s.get("views", 0)
-        return likes * 5 + views + momentum_bonus
+        return likes * 5 + views
     else:
         views = s.get("views", 0)
         verified_bonus = 500 if s.get("verified") else 0
-        return views + verified_bonus + momentum_bonus
+        return views + verified_bonus
 
 def send_script_of_the_day(daily_rs, daily_sb):
     date_str = datetime.now(WIB).strftime("%d %b %Y")
@@ -324,8 +214,6 @@ def send_script_of_the_day(daily_rs, daily_sb):
     loadstr = item.get("loadstring", "") or ""
     players = item.get("players", -1)
     player_str = f"\n🟢 <b>{players:,} active players</b>" if players > 0 else ""
-    game_status = item.get("status", "")
-    status_line = f"\n📊 {game_status}" if game_status else ""
 
     if is_rs:
         game = s.get("game", {})
@@ -353,7 +241,7 @@ def send_script_of_the_day(daily_rs, daily_sb):
         f"🏆 <b>SCRIPT OF THE DAY</b>\n"
         f"📅 {date_str}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"🎮 <b>{game_name}</b>{player_str}{status_line}\n"
+        f"🎮 <b>{game_name}</b>{player_str}\n"
         f"📜 {title}\n"
         f"{keyless} | {stats}\n"
         f"📦 {source}\n"
@@ -402,13 +290,12 @@ def process_rscripts(scripts, sent_map, pending, daily):
             continue
         raw_url = script.get("rawScript", "")
         loadstring = fetch_raw_loadstring(raw_url)
-        status = get_game_status(game_name)
-        entry = {"script": script, "loadstring": loadstring, "players": -1, "status": status}
+        entry = {"script": script, "loadstring": loadstring, "players": -1}
         pending.append(entry)
         daily.append(entry)
         sent_map[f"rs_{slug}"] = last_updated
         label = "🔄" if prev else "✅"
-        print(f"{label} [RScripts] {game_name} — {status}")
+        print(f"{label} [RScripts] {game_name}")
 
 def process_scriptblox(scripts, sent_map, pending, daily):
     for script in scripts:
@@ -427,14 +314,13 @@ def process_scriptblox(scripts, sent_map, pending, daily):
         if not game_name:
             continue
         loadstring = script.get("script", None)
-        status = get_game_status(game_name)
-        entry = {"script": script, "loadstring": loadstring, "players": -1, "status": status}
+        entry = {"script": script, "loadstring": loadstring, "players": -1}
         pending.append(entry)
         daily.append(entry)
         sent_map[f"sb_{slug}"] = last_bump
         label = "🔄" if prev else "✅"
         verified = "☑️" if script.get("verified") else ""
-        print(f"{label} [ScriptBlox] {game_name} {verified} — {status}")
+        print(f"{label} [ScriptBlox] {game_name} {verified}")
 
 # ── MAIN ──────────────────────────────────────────────────────────────────────
 def main():
